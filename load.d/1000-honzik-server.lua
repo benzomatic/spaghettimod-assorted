@@ -158,7 +158,7 @@ local function flagnotice(ci, s, o)
   spaghetti.latergame(300, function() ents.delent(i) end)
 end
 
-local jsonpersist = require"utils.jsonpersist"
+local jsonpersist, settime = require"utils.jsonpersist", require"std.settime"
 
 -- differentiate protected names and public names in color
 local function name(ci)
@@ -235,6 +235,46 @@ local function loadrecords(ci, text)
   ci.extra.pb = playerrecord
 end
 
+-- some commands
+commands.add("record", function(info)
+  if not _mapbest then playermsg("\f2No map record yet!", info.ci) return end
+  playermsg(displaybest(info.ci), info.ci)
+end, "#record: View the current map record as well as your personal best time (PB).")
+
+commands.add("top10", function(info)
+  if not _mapbest then playermsg("\f2No map record yet!", info.ci) return end
+  local file = jsonpersist.load(servertag.fntag .. "flagrecords" .. "." .. server.gamemode) or {}
+  local rcd, n = file[server.smapname] or { }, 0
+  playermsg("\f1Top 10 runs on \f0" .. server.modename(server.gamemode, '?') .. " " .. server.smapname .. "\f1:", info.ci)
+  local temp, fin = {}, {}
+  for k, v in pairs(rcd) do table.insert(temp, v) end
+  table.sort(temp, function(a, b) return a < b end)
+  for i, s in ipairs(temp) do
+    n = n + 1
+    for name, score in pairs(rcd) do if (s == score) and not fin[name] then 
+      fin[name] = score
+      local rounded = tonumber(string.format("%0.0f", score / 1000)) 
+      playermsg("\t\f1" .. n .. ")" .. spaces(n) .. "\f2" .. millis(score) .. spaces(rounded) .. "\f7seconds by " .. dname(name), info.ci)
+    end end
+    if n >= 10 then break end
+  end
+  if n > 4 then playermsg("\f1Press \f2F11 \f1to expand.", info.ci) end
+end, "#top10: View the all-time top 10 runs on this map.")
+
+commands.add("deleterecord", function(info)
+  if info.ci.privilege < server.PRIV_ADMIN then playermsg("Insufficient privilege.", info.ci) return end
+  if not info.args or info.args == "" then playermsg("\f6Please enter a name. Their record on this map will be permanently deleted.", info.ci) return end
+  local name = info.args
+  local file = jsonpersist.load(servertag.fntag .. "flagrecords" .. "." .. server.gamemode) or {}
+	local maprecord = file[server.smapname] or { }
+  local oldrec = maprecord[name]
+  if not oldrec then playermsg("\f6No record found for name '\f0" .. name .. "\f6'", info.ci) return end
+	maprecord[name] = nil
+  file[server.smapname] = maprecord
+  jsonpersist.save(file, servertag.fntag .. "flagrecords" .. "." .. server.gamemode)
+  playermsg("\f6Record '\f2" .. millis(oldrec) .. "s\f6' for '" .. dname(name) .. "\f6' deleted.", info.ci)
+  loadrecords()
+end, "#deleterecord <name>: Delete the record of player <name> on this mode and map.")
 
 commands.add("skipmap", function(info)
  if info.ci.privilege < (server.PRIV_ADMIN) then playermsg("Insufficient privilege.", info.ci) return end
@@ -252,6 +292,16 @@ spaghetti.addhook(server.N_SWITCHNAME, function(info)
   local newname, oldname, authed = engine.filtertext(info.text):sub(1, server.MAXNAMELEN):gsub("^$", "unnamed"), name(info.ci)
   if oldname ~= newname then info.ci.extra.newrecord, info.ci.extra.newpb = nil end
   loadrecords(info.ci, authed and oldname or newname)
+end)
+
+spaghetti.addhook("master", function(info)
+  if not info.authname or not info.authdesc or info.authdesc ~= protectdomain then return end
+  loadrecords(info.ci)
+  local welcomemsgbuf = info.ci.extra.welcomemsgbuf and info.ci.extra.welcomemsgbuf or ""
+  playermsg("\n\f0Login successful." .. welcomemsgbuf .. " \f7Your records will be saved as \"\f6" .. info.authname .. "\f7\".", info.ci)
+  if info.ci.extra.nameprotect or not info.ci.extra.npconnected then return end
+  if info.ci.extra.npsendingmsg then info.ci.extra.npsendingmsg = nil return end
+  for p in iterators.all() do if p.clientnum ~= info.ci.clientnum then playermsg("\f0" .. info.ci.name .. " \f7is verified", p) end end
 end)
 
 spaghetti.addhook("changemap", function(info)
@@ -325,9 +375,9 @@ spaghetti.addhook(server.N_TAKEFLAG, function(info)
       return
     end
     extra.bestrun = elapsed
-		  extra.pb = elapsed
+    extra.pb = elapsed
     local newrecord, saved = persistscore(ci)
-		  if newrecord then
+    if newrecord then
       if saved then 
         for p in iterators.all() do p.extra.newrecord = nil end
         msg = (msg ~= "") and msg .. " \f3-> NEW MAP RECORD!!" or ""
@@ -671,6 +721,8 @@ commands.add("info", function(info)
 end)
 
 local infos = {
+  "\f2Tip: \f7Enter \f1#top10 \f7to see this map's all-time top 10 record runs",
+  "\f2Tip: \f7Type \f1#record \f7to view the map record as well as your personal best (\f1PB\f7)",
   "\f2Tip: \f7Toggle the display of mapmodels with \f1#ghosts all|others|none",
   "\f2Tip: \f7Your \f1flagrun time \f7in milliseconds is being displayed in your \f1ping column\f7.",
   "\f2Tip: \f7Use \f1/kill \f7to respawn at the nearest flag. Or bind it to a key: \f1/bind <KEY> kill"
