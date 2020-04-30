@@ -121,10 +121,19 @@ spaghetti.addhook("connected", L"_.ci.state.state ~= engine.CS_SPECTATOR and ser
 local function resetflag(ci)
   if not ci.extra.flag then return end
   engine.sendpacket(ci.clientnum, 1, putf({r = 1}, server.N_RESETFLAG, ci.extra.flag, ci.state.lifesequence, -1, 0, 0):finalize(), -1)
-  ci.extra.flag, ci.extra.runstart = nil
+  ci.extra.ownflag, ci.extra.flag, ci.extra.runstart = false, nil, nil
   removeflagghost(ci)
 end
 
+local function lagnotify(ci) return playermsg("\n\f3Lag! Please fix your connection (ping & pj) and try it again!", ci) end
+
+local function lagging(ci)
+  if ci ~= nil and ci.extra.ownflag then
+    lagnotify(ci)
+    resetflag(ci)
+    respawn(ci)
+  end
+ end
 
 spaghetti.addhook(server.N_TRYDROPFLAG, function(info)
   if info.skip then return end
@@ -277,11 +286,11 @@ commands.add("deleterecord", function(info)
 end, "#deleterecord <name>: Delete the record of player <name> on this mode and map.")
 
 commands.add("skipmap", function(info)
- if info.ci.privilege < (server.PRIV_ADMIN) then playermsg("Insufficient privilege.", info.ci) return end
- server.gamelimit = server.gamemillis
- engine.sendpacket(-1, 1, putf({10, r=1}, server.N_TIMEUP, 0):finalize(), -1)
- server.sendservmsg(server.colorname(info.ci, nil) .. " changes to the next map.")
- end, "#skipmap: Skip the current map and force an intermission.")
+  if info.ci.privilege < (server.PRIV_ADMIN) then playermsg("Insufficient privilege.", info.ci) return end
+  server.gamelimit = server.gamemillis
+  engine.sendpacket(-1, 1, putf({10, r=1}, server.N_TIMEUP, 0):finalize(), -1)
+  server.sendservmsg(server.colorname(info.ci, nil) .. " changes to the next map.")
+end, "#skipmap: Skip the current map and force an intermission.")
 
 
 spaghetti.addhook("connected", function(info) loadrecords(info.ci) end)
@@ -323,14 +332,17 @@ spaghetti.addhook(server.N_TAKEFLAG, function(info)
   local ownedflag, takeflag = extra.flag, info.flag
   if takeflag < 0 or takeflag > 1 or ownedflag == takeflag then return end
   if not ownedflag then
-    extra.flag, extra.runstart = takeflag, server.gamemillis
+    if engine.totalmillis - info.ci.extra.lpos > 40 then lagnotify(ci) return end
+    extra.ownflag, extra.flag, extra.runstart = true, takeflag, server.gamemillis
     engine.sendpacket(cn, 1, putf({10, r = 1}, server.N_TAKEFLAG, cn, takeflag, lfs):finalize(), -1)
+    ci.extra.pickping = engine.getclientpeer(ci.clientnum).roundTripTime
     attachflagghost(ci)
     flagnotice(ci, server.S_FLAGPICKUP, ctf.flags[takeflag].spawnloc)
   else
     engine.sendpacket(cn, 1, putf({10, r = 1}, server.N_SCOREFLAG, cn, ownedflag, lfs, takeflag, lfs, -1, server.ctfteamflag(ci.team), 0, state.flags):finalize(), -1)
-    local elapsed = server.gamemillis - extra.runstart
-    extra.flag, extra.runstart = nil
+    ci.extra.scoreping = engine.getclientpeer(ci.clientnum).roundTripTime
+    local elapsed = server.gamemillis - extra.runstart + ci.extra.pickping - ci.extra.scoreping
+    extra.ownflag, extra.flag, extra.runstart = false, nil, nil
     removeflagghost(ci)
     flagnotice(ci, server.S_FLAGSCORE, ctf.flags[takeflag].spawnloc)
     local oldrun = extra.bestrun
@@ -460,6 +472,19 @@ calcscoreboard = function()
   end
   disappear()
 end
+
+spaghetti.addhook(server.N_POS, function(info)
+ if info.ci.extra.lpos ~= nil then
+   if (engine.totalmillis-info.ci.extra.lpos) > 200 then lagging(info.ci) end
+   if (engine.totalmillis-info.ci.extra.lpos) > 100 then
+     if info.ci.extra.counter ~= nil then
+       info.ci.extra.counter = info.ci.extra.counter + 1
+       if info.ci.extra.counter > 5 then lagging(info.ci) end
+     else info.ci.extra.counter = 0 end
+   else info.ci.extra.counter = 0 end
+ end
+ info.ci.extra.lpos = engine.totalmillis
+end)
 
 spaghetti.addhook("savegamestate", L"_.sc.extra.bestrun = _.ci.extra.bestrun")
 spaghetti.addhook("restoregamestate", L"_.ci.extra.bestrun = _.sc.extra.bestrun")
