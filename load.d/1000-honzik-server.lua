@@ -147,7 +147,7 @@ spaghetti.addhook("spawned", function(info)
 end)
 spaghetti.addhook("specstate", function(info) return info.ci.state.state == engine.CS_SPECTATOR and resetflag(info.ci) end)
 local best
-spaghetti.addhook("changemap", function(info) for ci in iterators.all() do ci.extra.flag, ci.extra.bestrun, ci.extra.runstart, best = nil end end)
+spaghetti.addhook("changemap", function(info) for ci in iterators.all() do ci.extra.maprank, ci.extra.flag, ci.extra.bestrun, ci.extra.runstart, best = 1/0, nil end end)
 spaghetti.addhook("clientdisconnect", function(info)
   if not best or best.clientnum ~= info.ci.clientnum then return end
   best = nil
@@ -177,7 +177,7 @@ local function name(ci)
 end
 
 -- ugly but functional: check if authname is protected anywhere in the protectdb, apparently auth.intersectauths only checks for matching domains
-local function dname(name)  
+local function dname(name)
   local protected = false
   for regex, auths in pairs(protectdb) do if name:match(regex) then for domain, users in pairs(auths) do if domain == protectdomain then
     for aname, val in pairs(users) do
@@ -195,12 +195,53 @@ end
 local function spaces(i) return (i < 10) and "  " or " " end
 
 local _mapbest, _mapbestplayer = nil, ""
+local position, abbrevs = { "\f31st", "\f62nd", "\f23rd" }, { "st", "nd", "rd" }
+local function decimal(num) return tostring((num / 10 - math.floor(num / 10)) * 10) end
+local function positionstr(rank) return (rank < 4) and position[rank] or "\f1" .. tostring(rank) .. ((rank <= 10 or rank >= 14) and abbrevs[tonumber(decimal(rank))] or "th") end
 
-local function displaybest(ci)
+local function displaybest(ci, omitrank)
   local str = ""
   if _mapbest then str = str .. "Map record: \f2" .. millis(_mapbest) .. "s \f7by " .. dname(_mapbestplayer) end
   if ci and ci.extra.pb then str = str .. "\f7 | Your personal best: \f2" .. millis(ci.extra.pb) .. "s" end
+  if ci and ci.extra.maprank and ci.extra.maprank ~= 1/0 and not omitrank then str = str .. "\f7 | Your rank: " .. positionstr(ci.extra.maprank) end
   return str
+end
+
+local function calculateranks(stats)
+  local temp, fin, ranks, n = {}, {}, {}, 0
+  for k, v in pairs(stats) do table.insert(temp, v) end
+  table.sort(temp, function(a, b) return a < b end)
+  for i, s in ipairs(temp) do
+    n = n + 1
+    for name, score in pairs(stats) do if (s == score) and not fin[name] then fin[name] = n end end
+  end
+  return fin
+end
+
+local function getrank(name, stats) return calculateranks(stats)[name] or 1/0 end
+
+local messagecns, reportlater = {}
+local function report(forceci, stats)
+  messagecns[forceci.clientnum] = true
+  if reportlater then return end
+  reportlater = spaghetti.later(2000, function()
+    local ranks = calculateranks(stats)
+    for ci in iterators.players() do
+      local rank = ranks[ci.name]
+      if rank then
+         if messagecns[ci.clientnum] or ci.extra.maprank ~= rank then
+           local rankstr, rankmsg = positionstr(rank)
+           if ci.extra.maprank == 1/0 then rankmsg = "You start off in " .. rankstr .. " place\f7!"
+           elseif rank < ci.extra.maprank then rankmsg = "You \f0climbed \f7to " .. rankstr .. " place\f7!"
+           else rankmsg = "Your rank: " .. rankstr end
+           ci.extra.maprank, ci.extra.persisting = rank, false
+           playermsg("\n" .. displaybest(ci, true) .. " \f7| " .. rankmsg, ci)
+         end
+      end
+    end
+    for cn, _ in pairs(messagecns) do messagecns[cn] = nil end
+    reportlater = nil
+  end)
 end
 
 local function persistscore(ci)
@@ -231,6 +272,9 @@ local function persistpb(ci, pb)
   maprecord[name] = pb
   file[server.smapname] = maprecord
   jsonpersist.save(file, servertag.fntag .. "flagrecords" .. "." .. server.gamemode)
+  engine.writelog("new pb: " .. string.format('%s (%d): %s seconds on %s %s', ci.name, ci.clientnum, millis(pb), server.modename(server.gamemode, '?'), server.smapname))
+  ci.extra.persisting = true
+  report(ci, maprecord)
 end
 
 local function loadrecords(ci, text)
@@ -242,32 +286,35 @@ local function loadrecords(ci, text)
   if mapbestplayer ~= "" then _mapbest, _mapbestplayer = mapbesttime, mapbestplayer end
   if not ci then return end
   ci.extra.pb = playerrecord
+  if not ci.extra.persisting then ci.extra.maprank = getrank(text or name(ci), maprecord) end
 end
 
 -- some commands
-commands.add("record", function(info)
+local function showrecord(info)
   if not _mapbest then playermsg("\f2No map record yet!", info.ci) return end
   playermsg(displaybest(info.ci), info.ci)
-end, "#record: View the current map record as well as your personal best time (PB).")
+end
+commands.add("record", showrecord, "#record: View the current map record as well as your personal best time (PB).")
+commands.add("rank", showrecord, "#rank: View the current map record as well as your personal best time (PB).")
 
 commands.add("top10", function(info)
   if not _mapbest then playermsg("\f2No map record yet!", info.ci) return end
   local file = jsonpersist.load(servertag.fntag .. "flagrecords" .. "." .. server.gamemode) or {}
   local rcd, n = file[server.smapname] or { }, 0
-  playermsg("\f1Top 10 runs on \f0" .. server.modename(server.gamemode, '?') .. " " .. server.smapname .. "\f1:", info.ci)
+  playermsg("Top 10 runs on \f0" .. server.modename(server.gamemode, '?') .. " " .. server.smapname .. "\f7:", info.ci)
   local temp, fin = {}, {}
   for k, v in pairs(rcd) do table.insert(temp, v) end
   table.sort(temp, function(a, b) return a < b end)
   for i, s in ipairs(temp) do
     n = n + 1
-    for name, score in pairs(rcd) do if (s == score) and not fin[name] then 
-      fin[name] = score
-      local rounded = tonumber(string.format("%0.0f", score / 1000)) 
-      playermsg("\t\f1" .. n .. ")" .. spaces(n) .. "\f2" .. millis(score) .. spaces(rounded) .. "\f7seconds by " .. dname(name), info.ci)
+    for sname, score in pairs(rcd) do if (s == score) and not fin[sname] then 
+      fin[sname] = score
+      local rounded, marker = tonumber(string.format("%0.0f", score / 1000)), (sname == name(info.ci)) and "\f0>>>" or ""
+      playermsg(marker .. "\t" .. positionstr(n) .. "\f7:\t \f2" .. millis(score) .. spaces(rounded) .. "\f7seconds by " .. dname(sname), info.ci)
     end end
     if n >= 10 then break end
   end
-  if n > 4 then playermsg("\f1Press \f2F11 \f1to expand.", info.ci) end
+  if n > 4 then playermsg("Press \f2F11 \f7to expand.", info.ci) end
 end, "#top10: View the all-time top 10 runs on this map.")
 
 commands.add("deleterecord", function(info)
@@ -275,10 +322,10 @@ commands.add("deleterecord", function(info)
   if not info.args or info.args == "" then playermsg("\f6Please enter a name. Their record on this map will be permanently deleted.", info.ci) return end
   local name = info.args
   local file = jsonpersist.load(servertag.fntag .. "flagrecords" .. "." .. server.gamemode) or {}
-	local maprecord = file[server.smapname] or { }
+  local maprecord = file[server.smapname] or { }
   local oldrec = maprecord[name]
   if not oldrec then playermsg("\f6No record found for name '\f0" .. name .. "\f6'", info.ci) return end
-	maprecord[name] = nil
+  maprecord[name] = nil
   file[server.smapname] = maprecord
   jsonpersist.save(file, servertag.fntag .. "flagrecords" .. "." .. server.gamemode)
   playermsg("\f6Record '\f2" .. millis(oldrec) .. "s\f6' for '" .. dname(name) .. "\f6' deleted.", info.ci)
@@ -494,7 +541,6 @@ spaghetti.addhook("connected", function()
 end)
 spaghetti.addhook("changemap", calcscoreboard)
 
-local position = { "\f11st \f0", "\f12nd \f0", "\f13rd \f0" }
 spaghetti.addhook("intermission", function()
   local classify = table.sort(map.lf(L"_", pick.fz(L"_.extra.bestrun", iterators.all())), L"_1.extra.bestrun < _2.extra.bestrun")
   if #classify == 0 then return end
@@ -502,7 +548,7 @@ spaghetti.addhook("intermission", function()
   for i = 1, 3 do
     if not classify[i] then break end
     local ci = classify[i]
-    msg = msg .. "\n\t" .. position[i] .. server.colorname(ci, nil) .. "\f1:" .. millis(ci.extra.bestrun, true) .. " seconds" .. (ci.extra.newrecord and " \f3(NEW MAP RECORD)" or "")
+    msg = msg .. "\n\t" .. position[i] .. "\f7:\t  \f0" .. server.colorname(ci, nil) .. " \f7-" .. millis(ci.extra.bestrun, true) .. " seconds" .. (ci.extra.newrecord and " \f3(NEW MAP RECORD)" or "")
   end
   server.sendservmsg(msg)
   for p in iterators.all() do if p.extra.newpb or p.extra.newrecord then
@@ -559,10 +605,10 @@ spaghetti.addhook("clientdisconnect", function(info) spectators[info.ci.clientnu
 
 spaghetti.addhook("worldstate_pos", function(info)
   info.skip = true
-  local position = info.ci.position.buf
-  local p = engine.enet_packet_create(position, 0)
+  local wposition = info.ci.position.buf
+  local p = engine.enet_packet_create(wposition, 0)
   for scn in pairs(spectators) do engine.sendpacket(scn, 0, p, -1) end
-  server.recordpacket(0, position)
+  server.recordpacket(0, wposition)
 end)
 
 local trackent = require"std.trackent"
@@ -748,7 +794,7 @@ end)
 local infos = {
   "\f2Tip: \f7Enter \f1#top10 \f7to see this map's all-time top 10 record runs",
   "\f2Tip: \f7Type \f1#record \f7to view the map record as well as your personal best (\f1PB\f7)",
-  "\f2Tip: \f7Toggle the display of mapmodels with \f1#ghosts all|others|none",
+  "\n\f2Tip: \f7Toggle the display of mapmodels with \f1#ghosts all\f7|\f1others\f7|\f1none",
   "\f2Tip: \f7Your \f1flagrun time \f7in milliseconds is being displayed in your \f1ping column\f7.",
   "\f2Tip: \f7Use \f1/kill \f7to respawn at the nearest flag. Or bind it to a key: \f1/bind <KEY> kill"
 }
