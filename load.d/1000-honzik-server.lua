@@ -192,8 +192,6 @@ local function millis(time, pretty)
   return pretty and " \fs\f2" .. alldecplaces .. "\fr" or alldecplaces
 end
 
-local function spaces(i) return (i < 10) and "  " or " " end
-
 local _mapbest, _mapbestplayer = nil, ""
 local position, abbrevs = { "\f31st", "\f62nd", "\f23rd" }, { "st", "nd", "rd" }
 local function decimal(num) return tostring((num / 10 - math.floor(num / 10)) * 10) end
@@ -309,8 +307,8 @@ commands.add("top10", function(info)
     n = n + 1
     for sname, score in pairs(rcd) do if (s == score) and not fin[sname] then 
       fin[sname] = score
-      local rounded, marker = tonumber(string.format("%0.0f", score / 1000)), (sname == name(info.ci)) and "\f0>>>" or ""
-      playermsg(marker .. "\t" .. positionstr(n) .. "\f7:\t \f2" .. millis(score) .. spaces(rounded) .. "\f7seconds by " .. dname(sname), info.ci)
+      local rounded, marker = math.floor(score / 1000), (sname == name(info.ci)) and "\f0>>>" or ""
+      playermsg(marker .. "\t" .. positionstr(n) .. "\f7:\t \f2" .. millis(score) .. ((rounded < 10) and "  " or " ") .. "\f7seconds by " .. dname(sname), info.ci)
     end end
     if n >= 10 then break end
   end
